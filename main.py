@@ -8,58 +8,37 @@ app = FastAPI()
 # --- Gist Settings ---
 GITHUB_TOKEN = "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"
 GIST_ID = "16ab9ab4ed573f30b04aa2cf2e20de47"
-GIST_FILE = "atl_keys.txt"
+GIST_FILE = "atl_keys.txt"  # можно оставить txt, но содержимое будет JSON
 
 SESSIONS = {}
 SESSION_TTL = 120
 
-# ---------------- GIST FUNCTIONS ----------------
-def gist_get():
+# ---------------- Gist Functions ----------------
+def load_licenses():
+    """Скачать JSON с Gist"""
     r = requests.get(
         f"https://api.github.com/gists/{GIST_ID}",
         headers={"Authorization": f"token {GITHUB_TOKEN}"}
     )
     r.raise_for_status()
     content = r.json()["files"][GIST_FILE]["content"]
-    licenses = {}
-    for line in content.strip().splitlines():
-        # Формат: HWID UID @username KEY PAYMENT
-        parts = line.split()
-        if len(parts) >= 5:
-            hwid, uid, username, key, payment = parts[:5]
-            licenses[key] = {"hwid": hwid, "expires_at": 0}
-    return licenses
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {}
 
-def gist_append(line):
-    content = requests.get(
-        f"https://api.github.com/gists/{GIST_ID}",
-        headers={"Authorization": f"token {GITHUB_TOKEN}"}
-    ).json()["files"][GIST_FILE]["content"]
-
-    if content.strip():
-        content += "\n"
-    content += line
-
-    requests.patch(
+def save_licenses(licenses: dict):
+    """Сохранить JSON в Gist"""
+    content = json.dumps(licenses, indent=4)
+    r = requests.patch(
         f"https://api.github.com/gists/{GIST_ID}",
         headers={"Authorization": f"token {GITHUB_TOKEN}"},
         json={"files": {GIST_FILE: {"content": content}}}
-    ).raise_for_status()
+    )
+    r.raise_for_status()
 
-def save_licenses(licenses):
-    # Перезаписываем Gist полностью
-    lines = []
-    for key, data in licenses.items():
-        lines.append(f"{data['hwid']} 0 user {key} PAY")
-    content = "\n".join(lines)
-    requests.patch(
-        f"https://api.github.com/gists/{GIST_ID}",
-        headers={"Authorization": f"token {GITHUB_TOKEN}"},
-        json={"files": {GIST_FILE: {"content": content}}}
-    ).raise_for_status()
-
-# ---------------- UTILS ----------------
-def key_expire_time(key):
+# ---------------- Utils ----------------
+def key_expire_time(key: str) -> int:
     now = int(time.time())
     if not key[-1].isdigit():
         return 0
@@ -72,7 +51,7 @@ def key_expire_time(key):
         return now + 2592000
     return 0
 
-def create_session(hwid):
+def create_session(hwid: str) -> str:
     sid = str(uuid.uuid4())
     SESSIONS[sid] = {
         "hwid": hwid,
@@ -80,7 +59,7 @@ def create_session(hwid):
     }
     return sid
 
-def validate_session(sid, hwid):
+def validate_session(sid: str, hwid: str) -> bool:
     s = SESSIONS.get(sid)
     if not s:
         return False
@@ -91,7 +70,7 @@ def validate_session(sid, hwid):
         return False
     return True
 
-# ---------------- MODELS ----------------
+# ---------------- Models ----------------
 class AuthReq(BaseModel):
     key: str
     hwid: str
@@ -100,10 +79,10 @@ class FileReq(BaseModel):
     session_id: str
     hwid: str
 
-# ---------------- ROUTES ----------------
+# ---------------- Routes ----------------
 @app.post("/auth")
 def auth(req: AuthReq):
-    licenses = gist_get()
+    licenses = load_licenses()
 
     lic = licenses.get(req.key)
     if not lic:
