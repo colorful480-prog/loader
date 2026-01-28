@@ -94,12 +94,19 @@ def get_file(req: FileReq):
 
     del SESSIONS[req.session_id]
 
+    file_path = "interium.dll"
+
+    if not os.path.exists(file_path):
+        raise HTTPException(500, "File not found on server")
+
     return FileResponse(
-        "test.txt",
-        media_type="text/plain",
-        filename="test.txt"
+        file_path,
+        media_type="application/octet-stream",
+        filename="interium.dll"
     )
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
+
