@@ -1,8 +1,14 @@
 {
-    "TEST-KEY-001": "HWID123",
-    "nicot2s": "",
-    "KOTIKT2S": ""
+  "TEST-KEY-001": {
+    "hwid": "",
+    "expires_at": 0
+  },
+  "TEST-KEY-002": {
+    "hwid": "",
+    "expires_at": 0
+  }
+  "TEST-KEY-003": {
+    "hwid": "",
+    "expires_at": 0
+  }
 }
-
-
-
