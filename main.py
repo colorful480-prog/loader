@@ -1,31 +1,64 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
-import json, uuid, time, os
+import json, uuid, time, os, requests
 
 app = FastAPI()
 
-LICENSE_FILE = "licenses.json"
+# --- Gist Settings ---
+GITHUB_TOKEN = "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"
+GIST_ID = "16ab9ab4ed573f30b04aa2cf2e20de47"
+GIST_FILE = "atl_keys.txt"
+
 SESSIONS = {}
 SESSION_TTL = 120
 
-def load_licenses():
-    if not os.path.exists(LICENSE_FILE):
-        return {}
-    with open(LICENSE_FILE, "r") as f:
-        try:
-            data = json.load(f)
-            for k, v in data.items():
-                if isinstance(v, str):
-                    data[k] = {"hwid": v, "expires_at": 0}
-            return data
-        except json.JSONDecodeError:
-            return {}
+# ---------------- GIST FUNCTIONS ----------------
+def gist_get():
+    r = requests.get(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"}
+    )
+    r.raise_for_status()
+    content = r.json()["files"][GIST_FILE]["content"]
+    licenses = {}
+    for line in content.strip().splitlines():
+        # Формат: HWID UID @username KEY PAYMENT
+        parts = line.split()
+        if len(parts) >= 5:
+            hwid, uid, username, key, payment = parts[:5]
+            licenses[key] = {"hwid": hwid, "expires_at": 0}
+    return licenses
+
+def gist_append(line):
+    content = requests.get(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"}
+    ).json()["files"][GIST_FILE]["content"]
+
+    if content.strip():
+        content += "\n"
+    content += line
+
+    requests.patch(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json={"files": {GIST_FILE: {"content": content}}}
+    ).raise_for_status()
 
 def save_licenses(licenses):
-    with open(LICENSE_FILE, "w") as f:
-        json.dump(licenses, f, indent=4)
+    # Перезаписываем Gist полностью
+    lines = []
+    for key, data in licenses.items():
+        lines.append(f"{data['hwid']} 0 user {key} PAY")
+    content = "\n".join(lines)
+    requests.patch(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json={"files": {GIST_FILE: {"content": content}}}
+    ).raise_for_status()
 
+# ---------------- UTILS ----------------
 def key_expire_time(key):
     now = int(time.time())
     if not key[-1].isdigit():
@@ -58,6 +91,7 @@ def validate_session(sid, hwid):
         return False
     return True
 
+# ---------------- MODELS ----------------
 class AuthReq(BaseModel):
     key: str
     hwid: str
@@ -66,9 +100,10 @@ class FileReq(BaseModel):
     session_id: str
     hwid: str
 
+# ---------------- ROUTES ----------------
 @app.post("/auth")
 def auth(req: AuthReq):
-    licenses = load_licenses()
+    licenses = gist_get()
 
     lic = licenses.get(req.key)
     if not lic:
@@ -105,8 +140,6 @@ def get_file(req: FileReq):
         filename="interium.dll"
     )
 
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
-
