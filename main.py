@@ -6,7 +6,7 @@ import json, uuid, time, os, requests
 app = FastAPI()
 
 # --- Gist Settings ---
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = "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"
 GIST_ID = "16ab9ab4ed573f30b04aa2cf2e20de47"
 GIST_FILE = "atl_keys.txt"  # можно оставить txt, но содержимое будет JSON
 
@@ -122,3 +122,4 @@ def get_file(req: FileReq):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
+
