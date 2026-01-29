@@ -19,82 +19,77 @@ r = redis.Redis.from_url(
     decode_responses=True
 )
 
-SESSION_TTL = 120  # секунд
+LICENSE_PREFIX = "key:license:"
+SESSION_TTL = 120
 
-# ================= UTILS =================
-
-def key_expire_time(key: str) -> int:
+# ================== UTILS ==================
+def key_expire_time(suffix: str) -> int:
     now = int(time.time())
-    if not key or not key[-1].isdigit():
-        return 0
-
-    if key[-1] == "1":
-        return now + 86400        # 1 день
-    if key[-1] == "2":
-        return now + 604800       # 7 дней
-    if key[-1] == "3":
-        return now + 2592000      # 30 дней
-
+    if suffix == "1": return now + 86400       # 1 день
+    if suffix == "2": return now + 1209600     # 2 недели
+    if suffix == "3": return now + 2592000     # месяц
     return 0
-
 
 def create_session(hwid: str) -> str:
     sid = str(uuid.uuid4())
-    r.hset(f"session:{sid}", mapping={
-        "hwid": hwid
-    })
-    r.expire(f"session:{sid}", SESSION_TTL)
+    r.setex(f"session:{sid}", SESSION_TTL, hwid)
     return sid
 
-
 def validate_session(sid: str, hwid: str) -> bool:
-    key = f"session:{sid}"
-
-    if not r.exists(key):
+    stored_hwid = r.get(f"session:{sid}")
+    if not stored_hwid:
         return False
+    if stored_hwid != hwid:
+        return False
+    return True
 
-    stored_hwid = r.hget(key, "hwid")
-    return stored_hwid == hwid
-
-
-# ================= MODELS =================
-
+# ================== MODELS ==================
 class AuthReq(BaseModel):
     key: str
     hwid: str
-
 
 class FileReq(BaseModel):
     session_id: str
     hwid: str
 
-
-# ================= ROUTES =================
-
+# ================== ROUTES ==================
 @app.post("/auth")
 def auth(req: AuthReq):
-    lic_key = f"license:{req.key}"
+    lic_key = LICENSE_PREFIX + req.key
+    print(f"[DEBUG] Client key: {req.key}")
+    print(f"[DEBUG] Redis key checked: {lic_key}")
 
     if not r.exists(lic_key):
+        print(f"[DEBUG] Exists in Redis: 0")
         raise HTTPException(401, "Invalid key")
 
-    expires_at = int(r.hget(lic_key, "expires_at") or 0)
-    hwid_saved = r.hget(lic_key, "hwid") or ""
+    print(f"[DEBUG] Exists in Redis: 1")
 
+    data = r.hgetall(lic_key)
+    print(f"[DEBUG] Redis value: {data}")
+
+    if not data:
+        raise HTTPException(401, "Invalid key structure in Redis")
+
+    hwid_saved = data.get("hwid", "")
+    expires_at = int(data.get("expires_at", 0))
+    key_suffix = req.key[-1] if req.key else "0"
+
+    # Проверка срока действия
     if expires_at != 0 and time.time() > expires_at:
         raise HTTPException(401, "Key expired")
 
+    # Активация ключа
     if hwid_saved == "":
         r.hset(lic_key, mapping={
             "hwid": req.hwid,
-            "expires_at": key_expire_time(req.key)
+            "expires_at": key_expire_time(key_suffix)
         })
     elif hwid_saved != req.hwid:
         raise HTTPException(401, "HWID mismatch")
 
     sid = create_session(req.hwid)
     return {"session_id": sid}
-
 
 @app.post("/get-file")
 def get_file(req: FileReq):
@@ -114,25 +109,6 @@ def get_file(req: FileReq):
         filename="interium.dll"
     )
 
-
-# ================= DEBUG / ADMIN =================
-
-@app.post("/debug/add-key/{key}")
-def debug_add_key(key: str):
-    r.hset(f"license:{key}", mapping={
-        "hwid": "",
-        "expires_at": 0
-    })
-    return {"status": "ok", "key": key}
-
-
-@app.get("/debug/all-keys")
-def debug_all_keys():
-    keys = r.keys("license:*")
-    return {"keys": keys}
-
-
-# ================= RUN =================
 
 if __name__ == "__main__":
     import uvicorn
