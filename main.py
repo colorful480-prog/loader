@@ -100,7 +100,10 @@ def get_file(req: FileReq):
     # одноразовая сессия
     r.delete(f"session:{req.session_id}")
 
-    file_path = "interium.dll"
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(BASE_DIR, "interium.dll")
+
+    
     if not os.path.exists(file_path):
         raise HTTPException(500, "File not found on server")
 
@@ -114,3 +117,4 @@ def get_file(req: FileReq):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
+
