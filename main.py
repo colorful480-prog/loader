@@ -1,43 +1,26 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
-import json, uuid, time, os, requests
+import redis
+import uuid, time, os, json
 
 app = FastAPI()
 
-# --- Gist Settings ---
-GITHUB_TOKEN = "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"
-GIST_ID = "16ab9ab4ed573f30b04aa2cf2e20de47"
-GIST_FILE = "atl_keys.txt"  # можно оставить txt, но содержимое будет JSON
+# ================= REDIS CONFIG =================
 
-SESSIONS = {}
+REDIS_URL = os.getenv("REDIS_URL")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL not set")
+
+r = redis.Redis.from_url(
+    REDIS_URL,
+    decode_responses=True
+)
+
+
 SESSION_TTL = 120
 
-# ---------------- Gist Functions ----------------
-def load_licenses():
-    """Скачать JSON с Gist"""
-    r = requests.get(
-        f"https://api.github.com/gists/{GIST_ID}",
-        headers={"Authorization": f"token {GITHUB_TOKEN}"}
-    )
-    r.raise_for_status()
-    content = r.json()["files"][GIST_FILE]["content"]
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {}
-
-def save_licenses(licenses: dict):
-    """Сохранить JSON в Gist"""
-    content = json.dumps(licenses, indent=4)
-    r = requests.patch(
-        f"https://api.github.com/gists/{GIST_ID}",
-        headers={"Authorization": f"token {GITHUB_TOKEN}"},
-        json={"files": {GIST_FILE: {"content": content}}}
-    )
-    r.raise_for_status()
-
-# ---------------- Utils ----------------
+# ================= UTILS =================
 def key_expire_time(key: str) -> int:
     now = int(time.time())
     if not key[-1].isdigit():
@@ -53,24 +36,25 @@ def key_expire_time(key: str) -> int:
 
 def create_session(hwid: str) -> str:
     sid = str(uuid.uuid4())
-    SESSIONS[sid] = {
-        "hwid": hwid,
-        "expires": time.time() + SESSION_TTL
-    }
+    r.setex(
+        f"session:{sid}",
+        SESSION_TTL,
+        json.dumps({"hwid": hwid})
+    )
     return sid
 
 def validate_session(sid: str, hwid: str) -> bool:
-    s = SESSIONS.get(sid)
-    if not s:
+    data = r.get(f"session:{sid}")
+    if not data:
         return False
-    if time.time() > s["expires"]:
-        del SESSIONS[sid]
-        return False
+
+    s = json.loads(data)
     if s["hwid"] != hwid:
         return False
+
     return True
 
-# ---------------- Models ----------------
+# ================= MODELS =================
 class AuthReq(BaseModel):
     key: str
     hwid: str
@@ -79,14 +63,16 @@ class FileReq(BaseModel):
     session_id: str
     hwid: str
 
-# ---------------- Routes ----------------
+# ================= ROUTES =================
 @app.post("/auth")
 def auth(req: AuthReq):
-    licenses = load_licenses()
+    lic_key = f"license:{req.key}"
+    lic_raw = r.get(lic_key)
 
-    lic = licenses.get(req.key)
-    if not lic:
+    if not lic_raw:
         raise HTTPException(401, "Invalid key")
+
+    lic = json.loads(lic_raw)
 
     if lic["expires_at"] != 0 and time.time() > lic["expires_at"]:
         raise HTTPException(401, "Key expired")
@@ -94,7 +80,7 @@ def auth(req: AuthReq):
     if lic["hwid"] == "":
         lic["hwid"] = req.hwid
         lic["expires_at"] = key_expire_time(req.key)
-        save_licenses(licenses)
+        r.set(lic_key, json.dumps(lic))
     elif lic["hwid"] != req.hwid:
         raise HTTPException(401, "HWID mismatch")
 
@@ -106,10 +92,10 @@ def get_file(req: FileReq):
     if not validate_session(req.session_id, req.hwid):
         raise HTTPException(403, "Invalid or expired session")
 
-    del SESSIONS[req.session_id]
+    # одноразовая сессия
+    r.delete(f"session:{req.session_id}")
 
     file_path = "interium.dll"
-
     if not os.path.exists(file_path):
         raise HTTPException(500, "File not found on server")
 
@@ -119,7 +105,16 @@ def get_file(req: FileReq):
         filename="interium.dll"
     )
 
+# ================= DEBUG HELPERS =================
+@app.post("/debug/add-key/{key}")
+def debug_add_key(key: str):
+    r.set(
+        f"license:{key}",
+        json.dumps({"hwid": "", "expires_at": 0})
+    )
+    return {"status": "ok", "key": key}
+
+# ================= RUN =================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
-
