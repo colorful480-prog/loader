@@ -93,6 +93,7 @@ def auth(req: AuthReq):
 
 @app.post("/get-file")
 def get_file(req: FileReq):
+    print("dsfsdf")
     if not validate_session(req.session_id, req.hwid):
         raise HTTPException(403, "Invalid or expired session")
 
