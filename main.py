@@ -93,28 +93,68 @@ def auth(req: AuthReq):
 
 @app.post("/get-file")
 def get_file(req: FileReq):
-    print("dsfsdf")
+    print("========== /get-file called ==========")
+
+    # --- входные данные ---
+    print("[DEBUG] session_id:", req.session_id)
+    print("[DEBUG] hwid:", req.hwid)
+
+    # --- проверка сессии ---
+    session_key = f"session:{req.session_id}"
+    session_raw = r.get(session_key)
+
+    print("[DEBUG] Redis session key:", session_key)
+    print("[DEBUG] Redis session exists:", bool(session_raw))
+    print("[DEBUG] Redis session raw:", session_raw)
+
     if not validate_session(req.session_id, req.hwid):
+        print("[ERROR] Session validation failed")
         raise HTTPException(403, "Invalid or expired session")
 
-    # одноразовая сессия
-    r.delete(f"session:{req.session_id}")
+    print("[OK] Session validated")
 
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(BASE_DIR, "interium.dll")
+    # --- удаляем одноразовую сессию ---
+    r.delete(session_key)
+    print("[DEBUG] Session deleted from Redis")
 
-    
+    # --- информация о файловой системе ---
+    cwd = os.getcwd()
+    print("[DEBUG] Current working directory:", cwd)
+
+    try:
+        files = os.listdir(cwd)
+        print("[DEBUG] Files in CWD:", files)
+    except Exception as e:
+        print("[ERROR] os.listdir failed:", e)
+
+    file_path = "interium.dll"
+    abs_path = os.path.abspath(file_path)
+
+    print("[DEBUG] file_path:", file_path)
+    print("[DEBUG] abs_path:", abs_path)
+    print("[DEBUG] exists:", os.path.exists(file_path))
+
     if not os.path.exists(file_path):
+        print("[FATAL] DLL FILE NOT FOUND")
         raise HTTPException(500, "File not found on server")
+
+    file_size = os.path.getsize(file_path)
+    print("[OK] File found, size:", file_size, "bytes")
+
+    print("========== Sending FileResponse ==========")
 
     return FileResponse(
         file_path,
         media_type="application/octet-stream",
-        filename="interium.dll"
+        filename="interium.dll",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Length": str(file_size)
+        }
     )
+
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080)
-
