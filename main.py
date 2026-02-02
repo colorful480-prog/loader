@@ -1,30 +1,28 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
 import redis
 import uuid
 import time
 import os
 import requests
+import base64
 
 app = FastAPI()
 
 # ================= REDIS CONFIG =================
 REDIS_URL = os.getenv("REDIS_URL")
-if not REDIS_URL:
-    raise RuntimeError("REDIS_URL not set")
-
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 LICENSE_PREFIX = "key:license:"
 SESSION_TTL = 120
+XOR_KEY = 0x47  # 🔐 XOR ключ
 
 # ================== UTILS =================
 def key_expire_time(suffix: str) -> int:
     now = int(time.time())
-    if suffix == "1": return now + 86400       # 1 день
-    if suffix == "2": return now + 1209600     # 2 недели
-    if suffix == "3": return now + 2592000     # месяц
+    if suffix == "1": return now + 86400
+    if suffix == "2": return now + 1209600
+    if suffix == "3": return now + 2592000
     return 0
 
 def create_session(hwid: str) -> str:
@@ -33,8 +31,10 @@ def create_session(hwid: str) -> str:
     return sid
 
 def validate_session(sid: str, hwid: str) -> bool:
-    stored_hwid = r.get(f"session:{sid}")
-    return stored_hwid == hwid
+    return r.get(f"session:{sid}") == hwid
+
+def xor_encrypt(data: bytes, key: int) -> bytes:
+    return bytes(b ^ key for b in data)
 
 # ================== MODELS =================
 class AuthReq(BaseModel):
@@ -48,74 +48,72 @@ class FileReq(BaseModel):
 # ================== ROUTES =================
 @app.post("/auth")
 def auth(req: AuthReq):
-    lic_key = LICENSE_PREFIX + req.key
+    try:
+        decoded_key  = base64.b64decode(req.key).decode()
+        decoded_hwid = base64.b64decode(req.hwid).decode()
+    except Exception:
+        raise HTTPException(400, "Invalid Base64")
+
+    lic_key = LICENSE_PREFIX + decoded_key
 
     if not r.exists(lic_key):
         raise HTTPException(401, "Invalid key")
 
     data = r.hgetall(lic_key)
-    if not data:
-        raise HTTPException(401, "Invalid key structure in Redis")
-
     hwid_saved = data.get("hwid", "")
     expires_at = int(data.get("expires_at", 0))
-    key_suffix = req.key[-1] if req.key else "0"
+    key_suffix = decoded_key[-1]
 
-    # Проверка срока действия
-    if expires_at != 0 and time.time() > expires_at:
+    if expires_at and time.time() > expires_at:
         raise HTTPException(401, "Key expired")
 
-    # Активация ключа
     if hwid_saved == "":
         r.hset(lic_key, mapping={
-            "hwid": req.hwid,
+            "hwid": decoded_hwid,
             "expires_at": key_expire_time(key_suffix)
         })
-    elif hwid_saved != req.hwid:
+    elif hwid_saved != decoded_hwid:
         raise HTTPException(401, "HWID mismatch")
 
-    sid = create_session(req.hwid)
-    return {"session_id": sid}
+    return {"session_id": create_session(decoded_hwid)}
 
-
+# 🔥 ОТДАЧА XOR-ЗАШИФРОВАННЫХ БАЙТОВ DLL
 @app.post("/get-file")
-def get_file(req: FileReq):
-    if not validate_session(req.session_id, req.hwid):
-        raise HTTPException(403, "Invalid or expired session")
+def get_dll_bytes(req: FileReq):
+    try:
+        sid  = base64.b64decode(req.session_id).decode()
+        hwid = base64.b64decode(req.hwid).decode()
+    except Exception:
+        raise HTTPException(400, "Invalid Base64")
 
-    # одноразовая сессия
-    r.delete(f"session:{req.session_id}")
+    if not validate_session(sid, hwid):
+        raise HTTPException(403, "Invalid session")
 
-    # --- путь к файлу на сервере ---
+    r.delete(f"session:{sid}")  # одноразовая
+
     file_path = "interium.dll"
 
-    # --- если файла нет, скачать его с репозитория ---
     if not os.path.exists(file_path):
-        github_url = os.getenv("GITHUB_DLL_URL")
-        github_token = os.getenv("GITHUB_TOKEN")
-        if not github_url:
-            raise HTTPException(500, "DLL URL not set")
+        url = os.getenv("GITHUB_DLL_URL")
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            raise HTTPException(500, "DLL download failed")
+        with open(file_path, "wb") as f:
+            f.write(resp.content)
 
-        headers = {}
-        if github_token:
-            headers["Authorization"] = f"token {github_token}"
+    with open(file_path, "rb") as f:
+        raw_bytes = f.read()
 
-        try:
-            resp = requests.get(github_url, headers=headers)
-            if resp.status_code != 200:
-                raise HTTPException(500, f"Failed to download DLL: {resp.status_code}")
-            with open(file_path, "wb") as f:
-                f.write(resp.content)
-        except Exception as e:
-            raise HTTPException(500, f"Failed to download DLL: {e}")
+    encrypted = xor_encrypt(raw_bytes, XOR_KEY)
 
-    return FileResponse(
-        file_path,
+    return Response(
+        content=encrypted,
         media_type="application/octet-stream",
-        filename="interium.dll",
-        headers={"Cache-Control": "no-store"}
+        headers={
+            "Cache-Control": "no-store",
+            "X-XOR-Key": "0x47"  # можешь убрать, если не нужен
+        }
     )
-
 
 if __name__ == "__main__":
     import uvicorn
